@@ -450,7 +450,7 @@ export const adminCreatecertificate = async (req, res) => {
     const hasFullName = fullName && String(fullName).trim();
     let resolvedVisitorId = visitorId ? String(visitorId).trim() : visitorId;
 
-    if ((!resolvedVisitorId || !String(resolvedVisitorId).trim()) && (enrollmentNumber || email)) {
+    if ((!resolvedVisitorId || !String(resolvedVisitorId).trim()) && !hasFullName && (enrollmentNumber || email)) {
       const enrollmentWhere = { courseSlug: courseSlugStr };
       if (enrollmentNumber && String(enrollmentNumber).trim()) {
         enrollmentWhere.enrollmentNumber = String(enrollmentNumber);
