@@ -34,6 +34,16 @@ app.use((req, res, next) => {
 
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
+// ✅ Health check route (keeps Render + Supabase awake via cron ping)
+app.get("/api/health", async (req, res) => {
+  try {
+    await sequelize.authenticate(); // database ko bhi ping karega
+    res.status(200).json({ status: "ok", time: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 // ✅ API Routes - Specific routes pehle
 app.use("/api/admin/settings", adminSettingsRoutes);
 app.use("/api/admin/placements", adminPlacementsRoutes);
