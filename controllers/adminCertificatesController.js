@@ -3,10 +3,10 @@ import path from "path";
 import { Op } from "sequelize";
 import { fileURLToPath } from 'url';
 
-// import certificate from "../models/certificate.js";
 import Course from "../models/Course.js";
 import CourseEnrollment from "../models/CourseEnrollment.js";
 import Certificate from "../models/Certificate.js";
+import { processUploadedPhoto, normalizePhotoUrl } from "../utils/mediaUpload.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 // Hard ceiling on how many keys/bytes we ever accept into `meta`.
 const MAX_META_KEYS = 200;
 const MAX_META_VALUE_LENGTH = 20000;
-const MAX_META_BYTES = 1 * 1024 * 1024;
+const MAX_META_BYTES = 10 * 1024 * 1024; // Increased to allow base64 images
 
 function safeStringifyMeta(meta) {
   if (meta === null || meta === undefined) return {};
@@ -56,7 +56,8 @@ function safeCleanMeta(rawMeta) {
     if (typeof v === "string") {
       const trimmed = v.trim();
       if (trimmed === "") continue;
-      if (trimmed.length > MAX_META_VALUE_LENGTH) continue;
+      // Allow longer value for photoUrl (base64)
+      if (k !== "photoUrl" && trimmed.length > MAX_META_VALUE_LENGTH) continue;
       cleaned[k] = trimmed;
     } else if (typeof v === "number" || typeof v === "boolean") {
       cleaned[k] = v;
@@ -94,11 +95,13 @@ export const adminListcertificates = async (req, res) => {
       if (to) where.issuedAt[Op.lte] = new Date(String(to));
     }
 
-    const take = limit ? Math.max(1, Math.min(200, Number(limit))) : 50;
-    const currentPage = page ? Math.max(1, Number(page)) : 1;
-    const offset = (currentPage - 1) * take;
+    let take = limit ? Math.max(1, Math.min(200, Number(limit))) : 50;
+    if (limit === "all") take = null;
 
-    const { rows, count } = await Certificate.findAndCountAll({
+    const currentPage = page ? Math.max(1, Number(page)) : 1;
+    const offset = take ? (currentPage - 1) * take : 0;
+
+    const queryOptions = {
       where,
       order: [["issuedAt", "DESC"]],
       attributes: [
@@ -112,23 +115,30 @@ export const adminListcertificates = async (req, res) => {
         "updatedAt",
         "meta",
       ],
-      limit: take,
-      offset,
-    });
+    };
 
-    // Ensure photo URLs are properly formatted
+    if (take) {
+      queryOptions.limit = take;
+      queryOptions.offset = offset;
+    }
+
+    const { rows, count } = await Certificate.findAndCountAll(queryOptions);
+
+    // Ensure photo URLs are properly normalized (leaving base64 and http URLs untouched)
     const processedRows = rows.map(row => {
       const data = row.toJSON();
       if (data.meta && data.meta.photoUrl) {
-        // Make sure photo URL starts with /uploads/
-        if (!data.meta.photoUrl.startsWith('/uploads/')) {
-          data.meta.photoUrl = `/uploads/certificates/${path.basename(data.meta.photoUrl)}`;
-        }
+        data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
       }
       return data;
     });
 
-    res.json({ items: processedRows, total: count, page: currentPage, limit: take });
+    res.json({ 
+      items: processedRows, 
+      total: count, 
+      page: currentPage, 
+      limit: take || count 
+    });
   } catch (err) {
     console.error("adminListcertificates error:", err);
     const msg = err?.errors?.[0]?.message || err?.message || "Server error";
@@ -160,13 +170,10 @@ export const admincertificateStats = async (req, res) => {
       limit: 5,
     });
 
-    // Process recent certificates to ensure photo URLs are correct
     const processedRecent = recent.map(row => {
       const data = row.toJSON();
       if (data.meta && data.meta.photoUrl) {
-        if (!data.meta.photoUrl.startsWith('/uploads/')) {
-          data.meta.photoUrl = `/uploads/certificates/${path.basename(data.meta.photoUrl)}`;
-        }
+        data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
       }
       return data;
     });
@@ -238,14 +245,17 @@ export const adminListEnrollments = async (req, res) => {
   }
 };
 
-// FIXED: Enhanced get certificate with proper data formatting
 export const adminGetcertificate = async (req, res) => {
   try {
     const { id } = req.params;
+    const paramStr = String(id).trim();
+    const isNumeric = /^\d+$/.test(paramStr);
+    const where = isNumeric
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
+      : { certificateNumber: paramStr };
     
-    // Find certificate with all fields
     const certificate = await Certificate.findOne({ 
-      where: { id },
+      where,
       attributes: [
         "id",
         "courseSlug",
@@ -263,10 +273,8 @@ export const adminGetcertificate = async (req, res) => {
       return res.status(404).json({ message: "certificate not found" });
     }
 
-    // Convert to plain object and ensure all data is properly formatted
     const certificateData = certificate.toJSON();
     
-    // Ensure meta is always a plain object (frontend depends on object fields)
     if (!certificateData.meta || typeof certificateData.meta !== "object" || Array.isArray(certificateData.meta)) {
       if (typeof certificateData.meta === "string") {
         try {
@@ -279,29 +287,9 @@ export const adminGetcertificate = async (req, res) => {
       }
     }
 
-
-    // Make sure photo URL is correctly formatted if it exists
     if (certificateData.meta.photoUrl) {
-      const raw = String(certificateData.meta.photoUrl).trim();
-      if (!raw) {
-        certificateData.meta.photoUrl = null;
-      } else if (raw.startsWith('http://') || raw.startsWith('https://')) {
-        // Keep full URL as-is
-        certificateData.meta.photoUrl = raw;
-      } else {
-        // Normalize any input to /uploads/certificates/<filename>
-        // If it's a bare filename or other path, keep only basename.
-        certificateData.meta.photoUrl = `/uploads/certificates/${path.basename(raw)}`;
-      }
+      certificateData.meta.photoUrl = normalizePhotoUrl(certificateData.meta.photoUrl);
     }
-
-    // Log for debugging
-    console.log('certificate fetched:', {
-      id: certificateData.id,
-      fullName: certificateData.fullName,
-      meta: certificateData.meta,
-      photoUrl: certificateData.meta.photoUrl || 'No photo'
-    });
 
     return res.json(certificateData);
   } catch (err) {
@@ -313,17 +301,11 @@ export const adminGetcertificate = async (req, res) => {
 export const adminDeletecertificate = async (req, res) => {
   try {
     const { id } = req.params;
-    const certificate = await Certificate.findOne({ where: { id } });
+    const cert = await Certificate.findOne({ where: { id } });
 
-    if (!certificate) return res.status(404).json({ message: "certificate not found" });
+    if (!cert) return res.status(404).json({ message: "certificate not found" });
 
-    const photoUrl = certificate.meta?.photoUrl;
-    if (photoUrl && photoUrl.startsWith("/uploads/")) {
-      const filePath = path.join(process.cwd(), photoUrl.replace(/^\//, ""));
-      fs.unlink(filePath, () => {});
-    }
-
-    await certificate.destroy();
+    await cert.destroy();
     res.json({ message: "certificate deleted" });
   } catch (err) {
     console.error(err);
@@ -331,39 +313,41 @@ export const adminDeletecertificate = async (req, res) => {
   }
 };
 
-// FIXED: Enhanced photo upload with better path handling
 export const adminUploadcertificatePhoto = async (req, res) => {
   try {
     const { id } = req.params;
-    const certificate = await Certificate.findOne({ where: { id } });
+    const cert = await Certificate.findOne({ where: { id } });
 
-    if (!certificate) {
-      return res.status(404).json({ message: "certificate not found" });
+    if (!cert) {
+      return res.status(404).json({ message: "Certificate not found" });
     }
     
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
     }
 
-    // Delete old photo if exists
-    const oldPhotoUrl = certificate.meta?.photoUrl;
-    if (oldPhotoUrl && oldPhotoUrl.startsWith("/uploads/")) {
-      const oldPath = path.join(process.cwd(), oldPhotoUrl.replace(/^\//, ""));
-      fs.unlink(oldPath, (err) => {
-        if (err) console.error("Failed to delete old photo:", err);
-      });
+    // Process photo for permanent storage (Cloudinary CDN or Base64 in PostgreSQL database)
+    const photoUrl = await processUploadedPhoto(req.file);
+
+    let currentMeta = cert.meta;
+    if (typeof currentMeta === "string") {
+      try {
+        currentMeta = JSON.parse(currentMeta);
+      } catch {
+        currentMeta = {};
+      }
+    }
+    if (!currentMeta || typeof currentMeta !== "object") {
+      currentMeta = {};
     }
 
-    // Store photo URL with correct path
-    const photoUrl = `/uploads/certificates/${req.file.filename}`;
     const updatedMeta = { 
-      ...(certificate.meta || {}), 
+      ...currentMeta, 
       photoUrl 
     };
 
-    await certificate.update({ meta: updatedMeta });
+    await cert.update({ meta: updatedMeta });
 
-    // Fetch updated certificate with all data
     const updated = await Certificate.findOne({ 
       where: { id },
       attributes: [
@@ -379,18 +363,13 @@ export const adminUploadcertificatePhoto = async (req, res) => {
       ]
     });
 
-    // Return complete certificate data
     const responseData = updated.toJSON();
-    
-    // Ensure photo URL is properly formatted in response
     if (responseData.meta && responseData.meta.photoUrl) {
-      if (!responseData.meta.photoUrl.startsWith('/uploads/')) {
-        responseData.meta.photoUrl = `/uploads/certificates/${path.basename(responseData.meta.photoUrl)}`;
-      }
+      responseData.meta.photoUrl = normalizePhotoUrl(responseData.meta.photoUrl);
     }
 
     res.json({ 
-      message: "Photo uploaded successfully",
+      message: "Photo uploaded and saved permanently",
       certificate: responseData 
     });
   } catch (err) {
@@ -421,7 +400,6 @@ function generatecertificateNumber() {
   return `JGF-${now}-${rand}`;
 }
 
-// FIXED: Enhanced create certificate with proper data handling
 export const adminCreatecertificate = async (req, res) => {
   try {
     let rawMetaInput = req.body?.meta;
@@ -496,39 +474,28 @@ export const adminCreatecertificate = async (req, res) => {
       if (!Number.isNaN(d.getTime())) issuedAtDate = d;
     }
 
+    // Process photo if uploaded
+    if (req.file) {
+      const permanentPhotoUrl = await processUploadedPhoto(req.file);
+      if (permanentPhotoUrl) {
+        cleanMeta.photoUrl = permanentPhotoUrl;
+      }
+    }
+
     // Check for existing certificate
     const existing = await Certificate.findOne({ 
       where: { courseSlug: courseSlugStr, visitorId: resolvedVisitorId } 
     });
 
-    // Handle photo upload if file exists
-    if (req.file) {
-      const photoUrl = `/uploads/certificates/${req.file.filename}`;
-      cleanMeta.photoUrl = photoUrl;
-    }
-
     if (existing) {
-      // Update existing certificate
       const patch = { fullName };
       if (issuedAtDate) patch.issuedAt = issuedAtDate;
-
-      // Handle photo update - delete old photo if exists
-      if (req.file) {
-        const oldPhotoUrl = existing.meta?.photoUrl;
-        if (oldPhotoUrl && oldPhotoUrl.startsWith("/uploads/")) {
-          const oldPath = path.join(process.cwd(), oldPhotoUrl.replace(/^\//, ""));
-          fs.unlink(oldPath, (err) => {
-            if (err) console.error("Failed to delete old photo:", err);
-          });
-        }
-      }
 
       const existingMeta = safeCleanMeta(existing.meta);
       patch.meta = { ...existingMeta, ...cleanMeta };
 
       await existing.update(patch);
       
-      // Fetch updated certificate with all data
       const updated = await Certificate.findOne({ 
         where: { id: existing.id },
         attributes: [
@@ -545,12 +512,8 @@ export const adminCreatecertificate = async (req, res) => {
       });
       
       const responseData = updated.toJSON();
-      
-      // Ensure photo URL is properly formatted
       if (responseData.meta && responseData.meta.photoUrl) {
-        if (!responseData.meta.photoUrl.startsWith('/uploads/')) {
-          responseData.meta.photoUrl = `/uploads/certificates/${path.basename(responseData.meta.photoUrl)}`;
-        }
+        responseData.meta.photoUrl = normalizePhotoUrl(responseData.meta.photoUrl);
       }
       
       return res.json(responseData);
@@ -566,16 +529,13 @@ export const adminCreatecertificate = async (req, res) => {
       meta: {
         ...cleanMeta,
         courseTitle: cleanMeta.courseTitle || courseTitleDefault,
-        // Ensure photoUrl is included if uploaded
-        ...(req.file && { photoUrl: `/uploads/certificates/${req.file.filename}` }),
       },
     };
 
-    const certificate = await Certificate.create(certificatePayload);
+    const createdCert = await Certificate.create(certificatePayload);
 
-    // Fetch the created certificate to ensure all data is returned
     const createdcertificate = await Certificate.findOne({
-      where: { id: certificate.id },
+      where: { id: createdCert.id },
       attributes: [
         "id",
         "courseSlug",
@@ -589,11 +549,14 @@ export const adminCreatecertificate = async (req, res) => {
       ]
     });
 
-    res.status(201).json(createdcertificate);
+    const resp = createdcertificate.toJSON();
+    if (resp.meta && resp.meta.photoUrl) {
+      resp.meta.photoUrl = normalizePhotoUrl(resp.meta.photoUrl);
+    }
+
+    res.status(201).json(resp);
   } catch (err) {
     console.error("adminCreatecertificate error:", err);
     res.status(500).json({ message: err?.message || "Server error" });
   }
 };
-
-

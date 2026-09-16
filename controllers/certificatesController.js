@@ -1,8 +1,7 @@
 import { Op } from "sequelize";
 import certificate from "../models/Certificate.js";
 import Course from "../models/Course.js";
-import path from "path";
-import fs from "fs";
+import { processUploadedPhoto, normalizePhotoUrl } from "../utils/mediaUpload.js";
 
 function getVisitorId(req) {
   return req.headers["x-visitor-id"] || req.query?.visitorId || req.body?.visitorId;
@@ -25,10 +24,19 @@ export const listMycertificates = async (req, res) => {
         "issuedAt",
         "createdAt",
         "updatedAt",
+        "meta",
       ],
     });
 
-    res.json(certificates);
+    const processed = certificates.map((row) => {
+      const data = row.toJSON();
+      if (data.meta && data.meta.photoUrl) {
+        data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
+      }
+      return data;
+    });
+
+    res.json(processed);
   } catch (err) {
     console.error("❌ listMycertificates error:", err);
     res.status(500).json({ message: "Server error" });
@@ -63,7 +71,6 @@ export const adminListcertificates = async (req, res) => {
       if (to) where.issuedAt[Op.lte] = new Date(String(to));
     }
 
-    // ✅ Pagination with "all" support
     let take = 25;
     let currentPage = 1;
     let offset = 0;
@@ -73,10 +80,8 @@ export const adminListcertificates = async (req, res) => {
       currentPage = page ? Math.max(1, Number(page)) : 1;
       offset = (currentPage - 1) * take;
     } else if (limit === "all") {
-      take = null; // No limit - show all
+      take = null;
     }
-
-    console.log(`📊 Page: ${currentPage}, Limit: ${take || 'ALL'}, Offset: ${offset}`);
 
     const queryOptions = {
       where,
@@ -101,17 +106,13 @@ export const adminListcertificates = async (req, res) => {
 
     const { rows, count } = await certificate.findAndCountAll(queryOptions);
 
-    const processedRows = rows.map(row => {
+    const processedRows = rows.map((row) => {
       const data = row.toJSON();
       if (data.meta && data.meta.photoUrl) {
-        if (!data.meta.photoUrl.startsWith('/uploads/')) {
-          data.meta.photoUrl = `/uploads/certificates/${path.basename(data.meta.photoUrl)}`;
-        }
+        data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
       }
       return data;
     });
-
-    console.log(`✅ Found ${count} certificates, returning ${processedRows.length}`);
 
     res.json({ 
       items: processedRows, 
@@ -131,30 +132,26 @@ export const getcertificate = async (req, res) => {
     const { id } = req.params;
     const visitorId = getVisitorId(req);
 
-    console.log("🔍 getcertificate called with ID:", id);
-    console.log("🔍 Visitor ID:", visitorId);
+    const paramStr = String(id).trim();
+    const isNumeric = /^\d+$/.test(paramStr);
+    const where = isNumeric
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
+      : { certificateNumber: paramStr };
 
-    const certificateData = await certificate.findOne({ where: { id } });
-    
-    console.log("📄 Certificate found:", certificateData ? "Yes" : "No");
+    const certificateData = await certificate.findOne({ where });
     
     if (!certificateData) {
       return res.status(404).json({ message: "Certificate not found" });
-    }
-
-    if (visitorId && certificateData.visitorId && certificateData.visitorId !== visitorId) {
-      console.warn("⚠️ Visitor mismatch:", { visitorId, certVisitorId: certificateData.visitorId });
     }
 
     const course = await Course.findOne({ where: { slug: certificateData.courseSlug } });
 
     let metaData = {};
     if (certificateData.meta) {
-      if (typeof certificateData.meta === 'string') {
+      if (typeof certificateData.meta === "string") {
         try {
           metaData = JSON.parse(certificateData.meta);
         } catch (e) {
-          console.error("Failed to parse meta:", e);
           metaData = {};
         }
       } else {
@@ -162,27 +159,20 @@ export const getcertificate = async (req, res) => {
       }
     }
 
+    if (metaData.photoUrl) {
+      metaData.photoUrl = normalizePhotoUrl(metaData.photoUrl);
+    }
+
     const certType = metaData.certificateType || "certificate";
-    const displayName = certType === 'diploma' ? 'Diploma' : 'Certificate';
+    const displayName = certType === "diploma" ? "Diploma" : "Certificate";
 
     const responseData = {
       ...certificateData.toJSON(),
-      courseTitle: course?.title || certificateData.meta?.courseTitle || certificateData.courseSlug,
+      courseTitle: course?.title || metaData?.courseTitle || certificateData.courseSlug,
       certificateType: certType,
       displayName: displayName,
       meta: metaData,
     };
-
-    console.log("✅ Sending certificate data:", {
-      id: responseData.id,
-      fullName: responseData.fullName,
-      certificateNumber: responseData.certificateNumber,
-      courseSlug: responseData.courseSlug,
-      courseTitle: responseData.courseTitle,
-      type: responseData.certificateType,
-      displayName: responseData.displayName,
-      metaKeys: Object.keys(responseData.meta)
-    });
 
     res.json(responseData);
   } catch (err) {
@@ -197,8 +187,6 @@ export const getcertificate = async (req, res) => {
 export const verifyCertificate = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    console.log("🔍 Verifying certificate ID:", id);
 
     if (!id) {
       return res.status(400).json({
@@ -207,11 +195,13 @@ export const verifyCertificate = async (req, res) => {
       });
     }
 
-    const certificateData = await certificate.findOne({
-      where: { certificateNumber: id }
-    });
+    const paramStr = String(id).trim();
+    const isNumeric = /^\d+$/.test(paramStr);
+    const where = isNumeric
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
+      : { certificateNumber: paramStr };
 
-    console.log("📄 Found certificate:", certificateData ? "Yes" : "No");
+    const certificateData = await certificate.findOne({ where });
 
     if (!certificateData) {
       return res.status(404).json({
@@ -226,11 +216,10 @@ export const verifyCertificate = async (req, res) => {
 
     let metaData = {};
     if (certificateData.meta) {
-      if (typeof certificateData.meta === 'string') {
+      if (typeof certificateData.meta === "string") {
         try {
           metaData = JSON.parse(certificateData.meta);
         } catch (e) {
-          console.error("Failed to parse meta:", e);
           metaData = {};
         }
       } else {
@@ -242,8 +231,12 @@ export const verifyCertificate = async (req, res) => {
       metaData.courseTitle = course?.title || certificateData.courseSlug;
     }
 
+    if (metaData.photoUrl) {
+      metaData.photoUrl = normalizePhotoUrl(metaData.photoUrl);
+    }
+
     const certType = metaData.certificateType || "certificate";
-    const displayName = certType === 'diploma' ? 'Diploma' : 'Certificate';
+    const displayName = certType === "diploma" ? "Diploma" : "Certificate";
 
     const responseData = {
       isValid: true,
@@ -263,16 +256,7 @@ export const verifyCertificate = async (req, res) => {
       }
     };
 
-    console.log("✅ Sending verification response:", {
-      id: responseData.certificate.id,
-      fullName: responseData.certificate.fullName,
-      courseTitle: responseData.certificate.meta.courseTitle,
-      type: responseData.certificate.certificateType,
-      displayName: responseData.certificate.displayName
-    });
-
     res.json(responseData);
-
   } catch (error) {
     console.error("❌ Certificate verification error:", error);
     return res.status(500).json({
@@ -288,9 +272,6 @@ export const updateCertificate = async (req, res) => {
     const { fullName, courseSlug, visitorId, enrollmentNumber, email, issuedAt, meta } = req.body;
     const photo = req.file;
 
-    console.log("🔍 Updating certificate ID:", id);
-    console.log("📝 Data received:", { fullName, courseSlug, visitorId, enrollmentNumber, email, issuedAt });
-
     const certificateData = await certificate.findByPk(id);
     if (!certificateData) {
       return res.status(404).json({ message: "Certificate not found" });
@@ -303,36 +284,47 @@ export const updateCertificate = async (req, res) => {
     if (email) certificateData.email = email;
     if (issuedAt) certificateData.issuedAt = issuedAt;
 
+    let mergedMeta = certificateData.meta || {};
+    if (typeof mergedMeta === "string") {
+      try {
+        mergedMeta = JSON.parse(mergedMeta);
+      } catch {
+        mergedMeta = {};
+      }
+    }
+
     if (meta) {
-      const metaData = typeof meta === 'string' ? JSON.parse(meta) : meta;
-      if (!metaData.certificateType && certificateData.meta?.certificateType) {
-        metaData.certificateType = certificateData.meta.certificateType;
-      }
-      if (!metaData.photoUrl && certificateData.meta?.photoUrl) {
-        metaData.photoUrl = certificateData.meta.photoUrl;
-      }
-      certificateData.meta = { ...(certificateData.meta || {}), ...metaData };
+      const incomingMeta = typeof meta === "string" ? JSON.parse(meta) : meta;
+      mergedMeta = { ...mergedMeta, ...incomingMeta };
     }
 
-    if (photo && photo.filename) {
-      const oldPhoto = certificateData.meta?.photoUrl;
-      if (oldPhoto && oldPhoto.startsWith("/uploads/")) {
-        const oldPath = path.join(process.cwd(), oldPhoto.replace(/^\//, ""));
-        fs.unlink(oldPath, () => {});
+    // Process new photo if uploaded
+    if (photo) {
+      const permanentPhotoUrl = await processUploadedPhoto(photo);
+      if (permanentPhotoUrl) {
+        mergedMeta.photoUrl = permanentPhotoUrl;
       }
-      const photoUrl = `/uploads/certificates/${photo.filename}`;
-      certificateData.meta = { ...(certificateData.meta || {}), photoUrl };
     }
 
+    certificateData.meta = mergedMeta;
     await certificateData.save();
     
     const updatedData = await certificate.findByPk(id);
-    let updatedMeta = {};
-    if (updatedData.meta) {
-      updatedMeta = typeof updatedData.meta === 'string' ? JSON.parse(updatedData.meta) : updatedData.meta;
+    let updatedMeta = updatedData.meta || {};
+    if (typeof updatedMeta === "string") {
+      try {
+        updatedMeta = JSON.parse(updatedMeta);
+      } catch {
+        updatedMeta = {};
+      }
     }
+
+    if (updatedMeta.photoUrl) {
+      updatedMeta.photoUrl = normalizePhotoUrl(updatedMeta.photoUrl);
+    }
+
     const certType = updatedMeta.certificateType || "certificate";
-    const displayName = certType === 'diploma' ? 'Diploma' : 'Certificate';
+    const displayName = certType === "diploma" ? "Diploma" : "Certificate";
 
     res.json({ 
       success: true, 
