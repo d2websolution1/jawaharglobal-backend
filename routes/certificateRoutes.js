@@ -21,8 +21,10 @@ router.get("/debug/all", async (req, res) => {
   }
 });
 
-// ✅ UPDATE ROUTE - PUT (JSON body)
-router.put("/:id", updateCertificate);
+import upload from "../middlewares/upload.js";
+
+// ✅ UPDATE ROUTE - PUT (Supports JSON & multipart/form-data with photo)
+router.put("/:id", upload.single("photo"), updateCertificate);
 
 // ✅ GET ROUTE - LAST
 router.get("/:id", getcertificate);

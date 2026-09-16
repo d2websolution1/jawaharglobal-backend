@@ -308,16 +308,20 @@ export const updateCertificate = async (req, res) => {
       if (!metaData.certificateType && certificateData.meta?.certificateType) {
         metaData.certificateType = certificateData.meta.certificateType;
       }
-      certificateData.meta = { ...certificateData.meta, ...metaData };
+      if (!metaData.photoUrl && certificateData.meta?.photoUrl) {
+        metaData.photoUrl = certificateData.meta.photoUrl;
+      }
+      certificateData.meta = { ...(certificateData.meta || {}), ...metaData };
     }
 
-    if (photo) {
-      const uploadDir = path.join(process.cwd(), "uploads", "certificates");
-      if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-      const fileName = `cert-${id}-${Date.now()}.jpg`;
-      const filePath = path.join(uploadDir, fileName);
-      fs.writeFileSync(filePath, photo.buffer);
-      certificateData.meta.photoUrl = `/uploads/certificates/${fileName}`;
+    if (photo && photo.filename) {
+      const oldPhoto = certificateData.meta?.photoUrl;
+      if (oldPhoto && oldPhoto.startsWith("/uploads/")) {
+        const oldPath = path.join(process.cwd(), oldPhoto.replace(/^\//, ""));
+        fs.unlink(oldPath, () => {});
+      }
+      const photoUrl = `/uploads/certificates/${photo.filename}`;
+      certificateData.meta = { ...(certificateData.meta || {}), photoUrl };
     }
 
     await certificateData.save();
