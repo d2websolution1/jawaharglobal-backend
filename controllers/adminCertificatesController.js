@@ -82,6 +82,7 @@ export const adminListcertificates = async (req, res) => {
       if (qStr) {
         where[Op.or] = [
           { certificateNumber: { [Op.like]: `%${qStr}%` } },
+          { diplomaNumber: { [Op.like]: `%${qStr}%` } },
           { fullName: { [Op.like]: `%${qStr}%` } },
           { courseSlug: { [Op.like]: `%${qStr}%` } },
           { visitorId: { [Op.like]: `%${qStr}%` } },
@@ -110,6 +111,7 @@ export const adminListcertificates = async (req, res) => {
         "fullName",
         "visitorId",
         "certificateNumber",
+        "diplomaNumber",
         "issuedAt",
         "createdAt",
         "updatedAt",
@@ -124,9 +126,12 @@ export const adminListcertificates = async (req, res) => {
 
     const { rows, count } = await Certificate.findAndCountAll(queryOptions);
 
-    // Ensure photo URLs are properly normalized (leaving base64 and http URLs untouched)
+    // Ensure photo URLs and diploma numbers are properly normalized
     const processedRows = rows.map(row => {
       const data = row.toJSON();
+      if (!data.diplomaNumber && data.meta?.diplomaNumber) {
+        data.diplomaNumber = data.meta.diplomaNumber;
+      }
       if (data.meta && data.meta.photoUrl) {
         data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
       }
@@ -161,6 +166,7 @@ export const admincertificateStats = async (req, res) => {
         "fullName",
         "visitorId",
         "certificateNumber",
+        "diplomaNumber",
         "issuedAt",
         "createdAt",
         "updatedAt",
@@ -172,6 +178,9 @@ export const admincertificateStats = async (req, res) => {
 
     const processedRecent = recent.map(row => {
       const data = row.toJSON();
+      if (!data.diplomaNumber && data.meta?.diplomaNumber) {
+        data.diplomaNumber = data.meta.diplomaNumber;
+      }
       if (data.meta && data.meta.photoUrl) {
         data.meta.photoUrl = normalizePhotoUrl(data.meta.photoUrl);
       }
@@ -251,10 +260,10 @@ export const adminGetcertificate = async (req, res) => {
     const paramStr = String(id).trim();
     const isNumeric = /^\d+$/.test(paramStr);
     const where = isNumeric
-      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
-      : { certificateNumber: paramStr };
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }, { diplomaNumber: paramStr }] }
+      : { [Op.or]: [{ certificateNumber: paramStr }, { diplomaNumber: paramStr }] };
     
-    const certificate = await Certificate.findOne({ 
+    let certificate = await Certificate.findOne({ 
       where,
       attributes: [
         "id",
@@ -262,12 +271,38 @@ export const adminGetcertificate = async (req, res) => {
         "fullName",
         "visitorId",
         "certificateNumber",
+        "diplomaNumber",
         "issuedAt",
         "createdAt",
         "updatedAt",
         "meta",
       ]
     });
+
+    // Fallback if not found by column: search meta JSON
+    if (!certificate && !isNumeric) {
+      const allCerts = await Certificate.findAll({
+        attributes: [
+          "id",
+          "courseSlug",
+          "fullName",
+          "visitorId",
+          "certificateNumber",
+          "diplomaNumber",
+          "issuedAt",
+          "createdAt",
+          "updatedAt",
+          "meta",
+        ]
+      });
+      certificate = allCerts.find(c => {
+        let m = c.meta;
+        if (typeof m === "string") {
+          try { m = JSON.parse(m); } catch { m = {}; }
+        }
+        return m?.diplomaNumber === paramStr || m?.certificateNumber === paramStr;
+      });
+    }
 
     if (!certificate) {
       return res.status(404).json({ message: "certificate not found" });
@@ -285,6 +320,18 @@ export const adminGetcertificate = async (req, res) => {
       } else {
         certificateData.meta = {};
       }
+    }
+
+    // Ensure diplomaNumber exists and is distinct from certificateNumber
+    let dipNum = certificateData.diplomaNumber || certificateData.meta.diplomaNumber;
+    if (!dipNum || dipNum === certificateData.certificateNumber) {
+      dipNum = generateDiplomaNumber();
+      certificateData.diplomaNumber = dipNum;
+      certificateData.meta.diplomaNumber = dipNum;
+      certificate.update({ diplomaNumber: dipNum, meta: certificateData.meta }).catch(e => console.error(e));
+    } else {
+      certificateData.diplomaNumber = dipNum;
+      certificateData.meta.diplomaNumber = dipNum;
     }
 
     if (certificateData.meta.photoUrl) {
@@ -400,6 +447,12 @@ function generatecertificateNumber() {
   return `JGF-${now}-${rand}`;
 }
 
+function generateDiplomaNumber() {
+  const rand = Math.random().toString(16).slice(2, 8).toUpperCase();
+  const now = Date.now().toString().slice(-6);
+  return `JGD-${now}-${rand}`;
+}
+
 export const adminCreatecertificate = async (req, res) => {
   try {
     let rawMetaInput = req.body?.meta;
@@ -492,7 +545,15 @@ export const adminCreatecertificate = async (req, res) => {
       if (issuedAtDate) patch.issuedAt = issuedAtDate;
 
       const existingMeta = safeCleanMeta(existing.meta);
-      patch.meta = { ...existingMeta, ...cleanMeta };
+      const mergedMeta = { ...existingMeta, ...cleanMeta };
+
+      let existingDip = existing.diplomaNumber || existingMeta.diplomaNumber;
+      if (!existingDip || existingDip === existing.certificateNumber) {
+        existingDip = generateDiplomaNumber();
+      }
+      mergedMeta.diplomaNumber = existingDip;
+      patch.diplomaNumber = existingDip;
+      patch.meta = mergedMeta;
 
       await existing.update(patch);
       
@@ -504,6 +565,7 @@ export const adminCreatecertificate = async (req, res) => {
           "fullName",
           "visitorId",
           "certificateNumber",
+          "diplomaNumber",
           "issuedAt",
           "createdAt",
           "updatedAt",
@@ -512,6 +574,9 @@ export const adminCreatecertificate = async (req, res) => {
       });
       
       const responseData = updated.toJSON();
+      if (!responseData.diplomaNumber && responseData.meta?.diplomaNumber) {
+        responseData.diplomaNumber = responseData.meta.diplomaNumber;
+      }
       if (responseData.meta && responseData.meta.photoUrl) {
         responseData.meta.photoUrl = normalizePhotoUrl(responseData.meta.photoUrl);
       }
@@ -519,15 +584,20 @@ export const adminCreatecertificate = async (req, res) => {
       return res.json(responseData);
     }
 
-    // Create new certificate
+    // Create new certificate & diploma numbers
+    const newCertNumber = generatecertificateNumber();
+    const newDiplomaNumber = generateDiplomaNumber();
+
     const certificatePayload = {
       courseSlug: courseSlugStr,
       fullName,
       visitorId: resolvedVisitorId,
-      certificateNumber: generatecertificateNumber(),
+      certificateNumber: newCertNumber,
+      diplomaNumber: newDiplomaNumber,
       issuedAt: issuedAtDate || new Date(),
       meta: {
         ...cleanMeta,
+        diplomaNumber: newDiplomaNumber,
         courseTitle: cleanMeta.courseTitle || courseTitleDefault,
       },
     };
@@ -542,6 +612,7 @@ export const adminCreatecertificate = async (req, res) => {
         "fullName",
         "visitorId",
         "certificateNumber",
+        "diplomaNumber",
         "issuedAt",
         "createdAt",
         "updatedAt",
@@ -550,6 +621,9 @@ export const adminCreatecertificate = async (req, res) => {
     });
 
     const resp = createdcertificate.toJSON();
+    if (!resp.diplomaNumber && resp.meta?.diplomaNumber) {
+      resp.diplomaNumber = resp.meta.diplomaNumber;
+    }
     if (resp.meta && resp.meta.photoUrl) {
       resp.meta.photoUrl = normalizePhotoUrl(resp.meta.photoUrl);
     }

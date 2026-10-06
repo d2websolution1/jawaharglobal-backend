@@ -80,6 +80,21 @@ const start = async () => {
       await sequelize.sync();
     }
 
+    // Ensure diplomaNumber column exists
+    try {
+      const qi = sequelize.getQueryInterface();
+      const tableInfo = await qi.describeTable("certificates");
+      if (!tableInfo.diplomaNumber) {
+        await qi.addColumn("certificates", "diplomaNumber", {
+          type: sequelize.Sequelize.STRING,
+          allowNull: true,
+        });
+        console.log("✅ Added diplomaNumber column to certificates table");
+      }
+    } catch (colErr) {
+      console.log("Column check info:", colErr.message);
+    }
+
     console.log("Database connected and synced");
     console.log(`Server is running on http://localhost:${PORT}`);
 

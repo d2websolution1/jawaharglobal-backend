@@ -7,6 +7,12 @@ function getVisitorId(req) {
   return req.headers["x-visitor-id"] || req.query?.visitorId || req.body?.visitorId;
 }
 
+function generateDiplomaNumber() {
+  const rand = Math.random().toString(16).slice(2, 8).toUpperCase();
+  const now = Date.now().toString().slice(-6);
+  return `JGD-${now}-${rand}`;
+}
+
 export const listMycertificates = async (req, res) => {
   try {
     const visitorId = getVisitorId(req);
@@ -21,6 +27,7 @@ export const listMycertificates = async (req, res) => {
         "fullName",
         "visitorId",
         "certificateNumber",
+        "diplomaNumber",
         "issuedAt",
         "createdAt",
         "updatedAt",
@@ -135,11 +142,23 @@ export const getcertificate = async (req, res) => {
     const paramStr = String(id).trim();
     const isNumeric = /^\d+$/.test(paramStr);
     const where = isNumeric
-      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
-      : { certificateNumber: paramStr };
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }, { diplomaNumber: paramStr }] }
+      : { [Op.or]: [{ certificateNumber: paramStr }, { diplomaNumber: paramStr }] };
 
-    const certificateData = await certificate.findOne({ where });
+    let certificateData = await certificate.findOne({ where });
     
+    // Fallback search in meta JSON
+    if (!certificateData && !isNumeric) {
+      const allCerts = await certificate.findAll();
+      certificateData = allCerts.find(c => {
+        let m = c.meta;
+        if (typeof m === "string") {
+          try { m = JSON.parse(m); } catch { m = {}; }
+        }
+        return m?.diplomaNumber === paramStr || m?.certificateNumber === paramStr;
+      });
+    }
+
     if (!certificateData) {
       return res.status(404).json({ message: "Certificate not found" });
     }
@@ -155,19 +174,36 @@ export const getcertificate = async (req, res) => {
           metaData = {};
         }
       } else {
-        metaData = certificateData.meta;
+        metaData = { ...certificateData.meta };
       }
+    }
+
+    // Ensure diplomaNumber exists and is distinct from certificateNumber
+    let diplomaNum = certificateData.diplomaNumber || metaData.diplomaNumber;
+    if (!diplomaNum || diplomaNum === certificateData.certificateNumber) {
+      diplomaNum = generateDiplomaNumber();
+      metaData.diplomaNumber = diplomaNum;
+      certificateData.diplomaNumber = diplomaNum;
+      certificateData.update({ diplomaNumber: diplomaNum, meta: metaData }).catch(e => console.error(e));
+    } else {
+      metaData.diplomaNumber = diplomaNum;
     }
 
     if (metaData.photoUrl) {
       metaData.photoUrl = normalizePhotoUrl(metaData.photoUrl);
     }
 
-    const certType = metaData.certificateType || "certificate";
+    const isDiplomaSearch = 
+      paramStr.toUpperCase().startsWith("JGD-") ||
+      (diplomaNum && paramStr.toLowerCase() === String(diplomaNum).toLowerCase()) ||
+      (!paramStr.toUpperCase().startsWith("JGF-") && metaData.certificateType === "diploma");
+
+    const certType = isDiplomaSearch ? "diploma" : (metaData.certificateType || "certificate");
     const displayName = certType === "diploma" ? "Diploma" : "Certificate";
 
     const responseData = {
       ...certificateData.toJSON(),
+      diplomaNumber: diplomaNum,
       courseTitle: course?.title || metaData?.courseTitle || certificateData.courseSlug,
       certificateType: certType,
       displayName: displayName,
@@ -191,22 +227,34 @@ export const verifyCertificate = async (req, res) => {
     if (!id) {
       return res.status(400).json({
         isValid: false,
-        message: "Certificate ID is required"
+        message: "Certificate or Diploma ID is required"
       });
     }
 
     const paramStr = String(id).trim();
     const isNumeric = /^\d+$/.test(paramStr);
     const where = isNumeric
-      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }] }
-      : { certificateNumber: paramStr };
+      ? { [Op.or]: [{ id: Number(paramStr) }, { certificateNumber: paramStr }, { diplomaNumber: paramStr }] }
+      : { [Op.or]: [{ certificateNumber: paramStr }, { diplomaNumber: paramStr }] };
 
-    const certificateData = await certificate.findOne({ where });
+    let certificateData = await certificate.findOne({ where });
+
+    // Fallback search in meta JSON
+    if (!certificateData && !isNumeric) {
+      const allCerts = await certificate.findAll();
+      certificateData = allCerts.find(c => {
+        let m = c.meta;
+        if (typeof m === "string") {
+          try { m = JSON.parse(m); } catch { m = {}; }
+        }
+        return m?.diplomaNumber === paramStr || m?.certificateNumber === paramStr;
+      });
+    }
 
     if (!certificateData) {
       return res.status(404).json({
         isValid: false,
-        message: "Certificate not found. Please check the ID and try again."
+        message: "Certificate or Diploma not found. Please check the ID and try again."
       });
     }
 
@@ -223,8 +271,19 @@ export const verifyCertificate = async (req, res) => {
           metaData = {};
         }
       } else {
-        metaData = certificateData.meta;
+        metaData = { ...certificateData.meta };
       }
+    }
+
+    // Ensure diplomaNumber exists and is distinct from certificateNumber
+    let diplomaNum = certificateData.diplomaNumber || metaData.diplomaNumber;
+    if (!diplomaNum || diplomaNum === certificateData.certificateNumber) {
+      diplomaNum = generateDiplomaNumber();
+      metaData.diplomaNumber = diplomaNum;
+      certificateData.diplomaNumber = diplomaNum;
+      certificateData.update({ diplomaNumber: diplomaNum, meta: metaData }).catch(e => console.error(e));
+    } else {
+      metaData.diplomaNumber = diplomaNum;
     }
 
     if (!metaData.courseTitle) {
@@ -235,8 +294,17 @@ export const verifyCertificate = async (req, res) => {
       metaData.photoUrl = normalizePhotoUrl(metaData.photoUrl);
     }
 
-    const certType = metaData.certificateType || "certificate";
+    // Distinguish Diploma vs Certificate based on query ID format or stored type
+    const isDiplomaSearch = 
+      paramStr.toUpperCase().startsWith("JGD-") ||
+      (diplomaNum && paramStr.toLowerCase() === String(diplomaNum).toLowerCase()) ||
+      (!paramStr.toUpperCase().startsWith("JGF-") && metaData.certificateType === "diploma");
+
+    const certType = isDiplomaSearch ? "diploma" : "certificate";
     const displayName = certType === "diploma" ? "Diploma" : "Certificate";
+    const verificationId = certType === "diploma" ? diplomaNum : certificateData.certificateNumber;
+
+    metaData.certificateType = certType;
 
     const responseData = {
       isValid: true,
@@ -244,10 +312,12 @@ export const verifyCertificate = async (req, res) => {
         id: certificateData.id,
         fullName: certificateData.fullName,
         certificateNumber: certificateData.certificateNumber,
+        diplomaNumber: diplomaNum,
         courseSlug: certificateData.courseSlug,
         visitorId: certificateData.visitorId,
         issuedAt: certificateData.issuedAt || certificateData.createdAt,
-        verificationId: certificateData.certificateNumber,
+        verificationId: verificationId,
+        displayNumber: verificationId,
         createdAt: certificateData.createdAt,
         updatedAt: certificateData.updatedAt,
         certificateType: certType,
@@ -269,7 +339,7 @@ export const verifyCertificate = async (req, res) => {
 export const updateCertificate = async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullName, courseSlug, visitorId, enrollmentNumber, email, issuedAt, meta } = req.body;
+    const { fullName, courseSlug, visitorId, enrollmentNumber, email, issuedAt, diplomaNumber, meta } = req.body;
     const photo = req.file;
 
     const certificateData = await certificate.findByPk(id);
@@ -283,6 +353,7 @@ export const updateCertificate = async (req, res) => {
     if (enrollmentNumber) certificateData.enrollmentNumber = enrollmentNumber;
     if (email) certificateData.email = email;
     if (issuedAt) certificateData.issuedAt = issuedAt;
+    if (diplomaNumber) certificateData.diplomaNumber = diplomaNumber;
 
     let mergedMeta = certificateData.meta || {};
     if (typeof mergedMeta === "string") {
