@@ -7,6 +7,7 @@ import Course from "../models/Course.js";
 import CourseEnrollment from "../models/CourseEnrollment.js";
 import Certificate from "../models/Certificate.js";
 import { processUploadedPhoto, normalizePhotoUrl } from "../utils/mediaUpload.js";
+import { parseFlexibleDate } from "../utils/dateHelper.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -521,10 +522,9 @@ export const adminCreatecertificate = async (req, res) => {
     const course = await Course.findOne({ where: { slug: courseSlugStr } });
     const courseTitleDefault = course ? course.title : prettifySlug(courseSlugStr);
 
-    let issuedAtDate;
+    let issuedAtDate = parseFlexibleDate(issuedAt);
     if (issuedAt && String(issuedAt).trim()) {
-      const d = new Date(String(issuedAt));
-      if (!Number.isNaN(d.getTime())) issuedAtDate = d;
+      cleanMeta.issuedDate = String(issuedAt).trim();
     }
 
     // Process photo if uploaded

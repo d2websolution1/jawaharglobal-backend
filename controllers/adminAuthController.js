@@ -40,6 +40,44 @@ export const adminLogin = async (req, res) => {
   }
 };
 
+export const adminChangePassword = async (req, res) => {
+  try {
+    const adminId = req.admin?.id;
+    if (!adminId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { currentPassword, newPassword } = req.body || {};
+
+    if (!newPassword || String(newPassword).trim().length < 6) {
+      return res.status(400).json({ message: "New password must be at least 6 characters long" });
+    }
+
+    const admin = await AdminUser.findByPk(adminId);
+    if (!admin) {
+      return res.status(404).json({ message: "Admin user not found" });
+    }
+
+    if (!currentPassword) {
+      return res.status(400).json({ message: "Current password is required" });
+    }
+
+    const ok = await bcrypt.compare(String(currentPassword), admin.passwordHash);
+    if (!ok) {
+      return res.status(400).json({ message: "Current password is incorrect" });
+    }
+
+    const passwordHash = await bcrypt.hash(String(newPassword).trim(), 10);
+    admin.passwordHash = passwordHash;
+    await admin.save();
+
+    return res.json({ success: true, message: "Admin password updated successfully!" });
+  } catch (err) {
+    console.error("adminChangePassword error:", err);
+    return res.status(500).json({ message: "Server error updating password" });
+  }
+};
+
 export const adminSeed = async (req, res) => {
   try {
     const seedUsername = process.env.ADMIN_SEED_USERNAME || "admin";

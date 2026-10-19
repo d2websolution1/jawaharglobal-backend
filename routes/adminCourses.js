@@ -1,5 +1,6 @@
 import express from "express";
 import adminAuth from "../middlewares/adminAuth.js";
+import upload from "../middlewares/upload.js";
 import {
   adminListCourses,
   adminGetCourse,
@@ -9,6 +10,7 @@ import {
   adminListModules,
   adminUpsertModule,
   adminDeleteModule,
+  adminUploadCourseImage,
 } from "../controllers/adminCoursesController.js";
 
 const router = express.Router();
@@ -17,8 +19,9 @@ router.use(adminAuth);
 
 router.get("/courses", adminListCourses);
 router.get("/courses/:slug", adminGetCourse);
-router.post("/courses", adminCreateCourse);
-router.put("/courses/:slug", adminUpdateCourse);
+router.post("/courses/upload-image", upload.single("image"), adminUploadCourseImage);
+router.post("/courses", upload.single("coverImage"), adminCreateCourse);
+router.put("/courses/:slug", upload.single("coverImage"), adminUpdateCourse);
 router.delete("/courses/:slug", adminDeleteCourse);
 
 router.get("/courses/:slug/modules", adminListModules);

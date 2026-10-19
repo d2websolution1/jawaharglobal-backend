@@ -1,5 +1,22 @@
 import Course from "../models/Course.js";
 import CourseModule from "../models/CourseModule.js";
+import { processUploadedPhoto, normalizePhotoUrl } from "../utils/mediaUpload.js";
+
+export const adminUploadCourseImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No image file provided" });
+    }
+    const uploadedUrl = await processUploadedPhoto(req.file);
+    if (!uploadedUrl) {
+      return res.status(500).json({ message: "Failed to process image" });
+    }
+    return res.json({ success: true, imageUrl: uploadedUrl });
+  } catch (err) {
+    console.error("adminUploadCourseImage error:", err);
+    return res.status(500).json({ message: err.message || "Failed to upload image" });
+  }
+};
 
 export const adminListCourses = async (req, res) => {
   try {
@@ -33,12 +50,18 @@ export const adminCreateCourse = async (req, res) => {
     const existing = await Course.findOne({ where: { slug } });
     if (existing) return res.status(409).json({ message: "Course slug already exists" });
 
+    let finalCoverImageUrl = coverImageUrl;
+    if (req.file) {
+      const uploaded = await processUploadedPhoto(req.file);
+      if (uploaded) finalCoverImageUrl = uploaded;
+    }
+
     const course = await Course.create({
       slug,
       title,
       description,
       level,
-      coverImageUrl,
+      coverImageUrl: finalCoverImageUrl,
       durationHours: durationHours ?? null,
       isActive: isActive ?? true,
     });
@@ -58,11 +81,17 @@ export const adminUpdateCourse = async (req, res) => {
     const course = await Course.findOne({ where: { slug } });
     if (!course) return res.status(404).json({ message: "Course not found" });
 
+    let finalCoverImageUrl = coverImageUrl;
+    if (req.file) {
+      const uploaded = await processUploadedPhoto(req.file);
+      if (uploaded) finalCoverImageUrl = uploaded;
+    }
+
     await course.update({
       title: title ?? course.title,
       description: description ?? course.description,
       level: level ?? course.level,
-      coverImageUrl: coverImageUrl ?? course.coverImageUrl,
+      coverImageUrl: finalCoverImageUrl ?? course.coverImageUrl,
       durationHours: durationHours ?? course.durationHours,
       isActive: isActive ?? course.isActive,
     });

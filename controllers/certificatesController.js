@@ -2,6 +2,7 @@ import { Op } from "sequelize";
 import certificate from "../models/Certificate.js";
 import Course from "../models/Course.js";
 import { processUploadedPhoto, normalizePhotoUrl } from "../utils/mediaUpload.js";
+import { parseFlexibleDate } from "../utils/dateHelper.js";
 
 function getVisitorId(req) {
   return req.headers["x-visitor-id"] || req.query?.visitorId || req.body?.visitorId;
@@ -352,7 +353,10 @@ export const updateCertificate = async (req, res) => {
     if (visitorId) certificateData.visitorId = visitorId;
     if (enrollmentNumber) certificateData.enrollmentNumber = enrollmentNumber;
     if (email) certificateData.email = email;
-    if (issuedAt) certificateData.issuedAt = issuedAt;
+    if (issuedAt) {
+      const parsedDate = parseFlexibleDate(issuedAt);
+      if (parsedDate) certificateData.issuedAt = parsedDate;
+    }
     if (diplomaNumber) certificateData.diplomaNumber = diplomaNumber;
 
     let mergedMeta = certificateData.meta || {};
@@ -367,6 +371,10 @@ export const updateCertificate = async (req, res) => {
     if (meta) {
       const incomingMeta = typeof meta === "string" ? JSON.parse(meta) : meta;
       mergedMeta = { ...mergedMeta, ...incomingMeta };
+    }
+
+    if (issuedAt && String(issuedAt).trim()) {
+      mergedMeta.issuedDate = String(issuedAt).trim();
     }
 
     // Process new photo if uploaded
