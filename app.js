@@ -95,6 +95,14 @@ const start = async () => {
       console.log("Column check info:", colErr.message);
     }
 
+    // Ensure courses.coverImageUrl is TEXT for base64 & long image URLs
+    try {
+      await sequelize.query('ALTER TABLE "courses" ALTER COLUMN "coverImageUrl" TYPE TEXT;');
+      console.log("✅ Ensured courses.coverImageUrl is TEXT");
+    } catch (courseColErr) {
+      console.log("Course coverImageUrl column check info:", courseColErr.message);
+    }
+
     console.log("Database connected and synced");
     console.log(`Server is running on http://localhost:${PORT}`);
 

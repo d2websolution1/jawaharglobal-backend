@@ -8,7 +8,7 @@ const Course = sequelize.define(
     title: { type: DataTypes.STRING, allowNull: false },
     description: { type: DataTypes.TEXT },
     level: { type: DataTypes.STRING },
-    coverImageUrl: { type: DataTypes.STRING },
+    coverImageUrl: { type: DataTypes.TEXT },
     durationHours: { type: DataTypes.INTEGER },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   },

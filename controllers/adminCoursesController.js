@@ -36,7 +36,7 @@ export const adminGetCourse = async (req, res) => {
     res.json(course);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err?.message || "Server error" });
   }
 };
 
@@ -69,7 +69,7 @@ export const adminCreateCourse = async (req, res) => {
     res.status(201).json(course);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err?.message || "Server error" });
   }
 };
 
@@ -99,7 +99,7 @@ export const adminUpdateCourse = async (req, res) => {
     res.json(course);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err?.message || "Server error" });
   }
 };
 
@@ -116,7 +116,7 @@ export const adminDeleteCourse = async (req, res) => {
     res.json({ message: "Deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err?.message || "Server error" });
   }
 };
 
@@ -130,7 +130,7 @@ export const adminListModules = async (req, res) => {
     res.json(modules);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err?.message || "Server error" });
   }
 };
 
